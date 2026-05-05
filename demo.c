@@ -92,10 +92,11 @@ void kick(double duration, double frequency, int volume) {
 		double current_freq = frequency * (1.0 - progress);
 		// frequency drops over time
 
-		double envelope = (1 - progress) * (1 - progress);
+		// double envelope = (1 - progress) * (1 - progress);
 		// simple decay envelope
 
-		double curr_vol = volume * envelope;
+		// double curr_vol = volume * envelope;
+		double curr_vol = volume;
 
 		phase += 2.0 * M_PI * current_freq / SAMPLE_RATE;
 		double wave = sin(phase);
@@ -177,9 +178,19 @@ int main(int argc, char *argv[]) {
 	// }
 
 	while (1) {
-		kick(0.2, 50.0, 125);
-		snare(0.2, 200.0, 64, 0.3);
-		kick(0.2, 400.0, 64);
+		kick(0.1, 200.0, 100);
+		kick(0.1, 400.0, 100);
+		kick(0.1, 800.0, 100);
+		kick(0.1, 400.0, 100);
+		kick(0.1, 200.0, 100);
+		for (int i = 0; i < 4; i++) {
+			snare(0.1, 800, 100, .6);
+			snare(0.1, 400, 100, .6);
+			snare(0.1, 200, 100, .6);
+			if (i % 2 == 1) {
+				snare(.1, 1600, 50, .5);
+			}
+		}
 	}
 
 	// TODO: look into sequencing
