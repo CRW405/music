@@ -29,66 +29,89 @@ typedef struct Osc {
 	double sample_rate; // "frame rate" of the sound
 } Osc;
 
-// ADSR Envelope
-typedef enum adsrState { ATTACK, DECAY, SUSTAIN, RELEASE, DONE } adsrState;
+typedef enum AdsrState {
+	ADSR_ATTACK,
+	ADSR_DECAY,
+	ADSR_SUSTAIN,
+	ADSR_RELEASE,
+	ADSR_OFF
+} AdsrState;
+
 typedef struct Adsr {
-	double a_dur; // attack duration
-	double d_dur; // decay duration
-	double s_vol; // sustain volume (0 to 1)
-	double r_dur; // release duration
-	adsrState state;
-	double cur;
+	AdsrState state;
+	double attack_time;
+	double decay_time;
+	double sustain_level;
+	double release_time;
+	double current_amplitude;
 } Adsr;
 
 // TODO: Low Frequency Oscillator (LFO) for modulation, vibrato, tremolo, etc
 
+// Note
+typedef double (*sample_func)(Osc *); // function pointer type for sample functions
+
 typedef struct Note {
 	Osc osc;
-	Adsr env;
+	bool adsr_enabled;
+	Adsr adsr;
+	sample_func sample_func; // function pointer to the sample function for this note
 } Note;
 
-Osc create_simple_osc(double f, double a, double sr) {
-	return (Osc){.phase = 0, .frequency = f, .amplitude = a, .sample_rate = sr};
+Osc create_osc(double f, double a, double sr) {
+	return (Osc){
+	    .phase = 0,
+	    .frequency = f,
+	    .amplitude = a,
+	    .sample_rate = sr};
 }
 
-Adsr create_adsr(double a, double d, double s, double r) {
-	return (Adsr){.a_dur = a,
-	              .d_dur = d,
-	              .s_vol = s,
-	              .r_dur = r,
-	              .state = ATTACK,
-	              .cur = 0};
+Adsr create_adsr(double attack, double decay, double sustain, double release) {
+	return (Adsr){
+	    .state = ADSR_OFF,
+	    .attack_time = attack,
+	    .decay_time = decay,
+	    .sustain_level = sustain,
+	    .release_time = release,
+	    .current_amplitude = 0};
 }
 
-Note create_note(double f, double a, double sr, double a_dur, double d_dur,
-                 double s_vol, double r_dur) {
-	return (Note){.osc = create_simple_osc(f, a, sr),
-	              .env = create_adsr(a_dur, d_dur, s_vol, r_dur)};
+Note create_note(double f, double a, double sr, sample_func s_fn, double attack, double decay, double sustain, double release) {
+	if (attack > 0 || decay > 0 || sustain > 0 || release > 0) {
+		return (Note){
+		    .osc = create_osc(f, a, sr),
+		    .adsr_enabled = true,
+		    .adsr = create_adsr(attack, decay, sustain, release),
+		    .sample_func = s_fn};
+	} else {
+		return (Note){
+		    .osc = create_osc(f, a, sr),
+		    .adsr_enabled = false,
+		    .sample_func = s_fn};
+	}
+}
+
+Note create_simple_note(double f, double a, double sr, sample_func s_fn) {
+	return (Note){
+	    .osc = create_osc(f, a, sr),
+	    .adsr_enabled = false,
+	    .sample_func = s_fn};
 }
 
 double sin_sample(Osc *o) {
-	double sample = sin(o->phase) * o->amplitude; // compute the current sample
+	double sample = sin(o->phase);                          // compute the current sample
 	o->phase += (2 * M_PI * o->frequency) / o->sample_rate; // update the phase
 	if (o->phase >= 2 * M_PI) {
 		// 2*pi is a full phase in radians, if the osc has exceded a full
-		// phase, we subtract a full phase to wrap the excess around to keep it
-		// in phase, better modeling a real sound osc
-		o->phase -= 2 * M_PI;
-	}
-	return sample;
-}
-
-double cos_sample(Osc *o) {
-	double sample = cos(o->phase) * o->amplitude;
-	o->phase += (2 * M_PI * o->frequency) / o->sample_rate;
-	if (o->phase >= 2 * M_PI) {
+		// phase, we subtract a full phase to wrap the excess around to keep
+		// it in phase, better modeling a real sound osc
 		o->phase -= 2 * M_PI;
 	}
 	return sample;
 }
 
 double square_sample(Osc *o) {
-	double sample = (o->phase < M_PI) ? o->amplitude : -o->amplitude;
+	double sample = (o->phase < M_PI);
 	o->phase += (2 * M_PI * o->frequency) / o->sample_rate;
 	if (o->phase >= 2 * M_PI) {
 		o->phase -= 2 * M_PI;
@@ -139,13 +162,6 @@ void output_byte(double sample) {
 	putchar(byte);
 }
 
-void render_raw_osc(Osc *o, double (*sample)(Osc *), double duration) {
-	for (int i = 0; i < o->sample_rate * duration; i++) {
-		double s = sample(o);
-		output_byte(s);
-	}
-}
-
 double noise_sample(Osc *o) {
 	// random noise between -1 and 1
 	double sample = ((double)rand() / RAND_MAX) * 2 - 1;
@@ -159,64 +175,110 @@ void silence(double time, double sample_rate) {
 	}
 }
 
+void play(Note *note, double duration) {
+	int total_samples = duration * note->osc.sample_rate;
+	for (int i = 0; i < total_samples; i++) {
+
+		double sample = note->sample_func(&note->osc);
+		output_byte(sample);
+	}
+}
+
+void play_adsr(Note *note) {
+	int total_samples = (note->adsr.attack_time + note->adsr.decay_time + note->adsr.release_time) * note->osc.sample_rate;
+	note->adsr.state = ADSR_ATTACK; // Start the ADSR envelope
+	for (int i = 0; i < total_samples; i++) {
+		// Update ADSR envelope
+		switch (note->adsr.state) {
+		case ADSR_ATTACK:
+			note->adsr.current_amplitude += 1.0 / (note->adsr.attack_time * note->osc.sample_rate);
+			if (note->adsr.current_amplitude >= 1.0) {
+				note->adsr.current_amplitude = 1.0;
+				note->adsr.state = ADSR_DECAY;
+			}
+			break;
+		case ADSR_DECAY:
+			note->adsr.current_amplitude -= (1.0 - note->adsr.sustain_level) / (note->adsr.decay_time * note->osc.sample_rate);
+			if (note->adsr.current_amplitude <= note->adsr.sustain_level) {
+				note->adsr.current_amplitude = note->adsr.sustain_level;
+				note->adsr.state = ADSR_SUSTAIN;
+			}
+			break;
+		case ADSR_SUSTAIN:
+			// Sustain level is maintained until the note is released
+			break;
+		case ADSR_RELEASE:
+			note->adsr.current_amplitude -= note->adsr.sustain_level / (note->adsr.release_time * note->osc.sample_rate);
+			if (note->adsr.current_amplitude <= 0) {
+				note->adsr.current_amplitude = 0;
+				note->adsr.state = ADSR_OFF;
+			}
+			break;
+		case ADSR_OFF:
+			// Note is silent
+			break;
+		}
+
+		double sample = note->sample_func(&note->osc) * note->adsr.current_amplitude;
+		output_byte(sample);
+	}
+}
+
 int main(int argc, char *argv[]) {
 	double sample_rate = 44100;
 
-	// Osc o = create_simple_osc(500, .25, sample_rate);
-	// render_raw_osc(&o, sin_sample, 2);
-	// silence(0.5, sample_rate);
-	// render_raw_osc(&o, square_sample, 2);
-	// silence(0.5, sample_rate);
-	// render_raw_osc(&o, saw_sample, 2);
-	// silence(0.5, sample_rate);
-	// render_raw_osc(&o, triangle_sample, 2);
-	// silence(0.5, sample_rate);
-	// render_raw_osc(&o, noise_sample, 2);
+	// Osc mary_had_a_little_lamb_osc[] = {
+	//     create_osc(N_E * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_D * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_C * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_D * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_E * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_E * pow(2, 4), .25, sample_rate),
+	//     create_osc(N_E * pow(2, 4), .25, sample_rate),
+	// };
 
-	Osc E = create_simple_osc(N_E * pow(2, 4), .25, sample_rate);
-	Osc G = create_simple_osc(N_G * pow(2, 4), .25, sample_rate);
-	Osc A = create_simple_osc(N_A * pow(2, 4), .25, sample_rate);
+	// Note mary_had_a_little_lamb[] = {
+	//     create_simple_note(N_E * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_D * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_C * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_D * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_E * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_E * pow(2, 4), .25, sample_rate, sin_sample),
+	//     create_simple_note(N_E * pow(2, 4), .25, sample_rate, sin_sample),
+	// };
 
-	for (int i = 0; i < sample_rate * 2; i++) {
-		double s = sin_sample(&E);
-		output_byte(s);
-	}
-	for (int i = 0; i < sample_rate * 2; i++) {
-		double s = sin_sample(&E) + sin_sample(&G);
-		output_byte(s);
-	}
-	for (int i = 0; i < sample_rate * 4; i++) {
-		double s = sin_sample(&E) + sin_sample(&G) + sin_sample(&A);
-		output_byte(s);
-	}
-	// silence(0.5, sample_rate);
+	// Osc E = create_osc(N_E * pow(2, 4), .1, sample_rate);
+	// Osc G = create_osc(N_G * pow(2, 4), .1, sample_rate);
+	// Osc A = create_osc(N_A * pow(2, 4), .1, sample_rate);
 
-	Osc mary_had_a_little_lamb[] = {
-	    create_simple_osc(N_E * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_D * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_C * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_D * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_E * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_E * pow(2, 4), .25, sample_rate),
-	    create_simple_osc(N_E * pow(2, 4), .25, sample_rate),
-	};
-
-	// for (int i = 0; i < 7; i++) {
-	// 	for (int j = 0; j < sample_rate * 0.5; j++) {
-	// 		double s = sin_sample(&mary_had_a_little_lamb[i]);
-	// 		output_byte(s);
-	// 	}
-	// }
-
-	Osc E1 = create_simple_osc(N_E * pow(2, 4), 1, sample_rate);
-	Osc E2 = create_simple_osc(N_E * pow(2, 4), 1, sample_rate);
-
-	// E2.phase = M_PI;
-	//
 	// for (int i = 0; i < sample_rate * 2; i++) {
-	// 	double s = sin_sample(&E1) + sin_sample(&E2);
+	// 	double s = sin_sample(&E);
 	// 	output_byte(s);
 	// }
+	// for (int i = 0; i < sample_rate * 2; i++) {
+	// 	double s = sin_sample(&E) + sin_sample(&G);
+	// 	s /= 2;
+	// 	output_byte(s);
+	// }
+	// for (int i = 0; i < sample_rate * 2; i++) {
+	// 	double s = sin_sample(&E) + sin_sample(&G) + sin_sample(&A);
+	// 	s /= 3;
+	// 	output_byte(s);
+	// }
+
+	// Note simple = create_simple_note(N_E * pow(2, 4), .25, sample_rate, sin_sample);
+	// play(&simple, 2.0);
+	// Note adsr_note = create_note(N_G * pow(2, 4), .25, sample_rate, sin_sample, 0.5, 0.5, 0.7, 1.0);
+	// play_adsr(&adsr_note);
+
+	Note drum = create_note(N_C * pow(2, 2), .5, sample_rate, noise_sample, 0.01, 0.1, 0.0, 0.5);
+	play_adsr(&drum);
+
+	Note kick = create_note(N_C * pow(2, 2), .5, sample_rate, saw_sample, 0.01, 0.5, 0.0, 0.5);
+	play_adsr(&kick);
+
+	Note snare = create_note(N_C * pow(2, 2), .5, sample_rate, square_sample, 0.01, 0.2, 0.0, 0.5);
+	play_adsr(&snare);
 
 	return EXIT_SUCCESS;
 }
